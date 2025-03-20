@@ -1,66 +1,756 @@
 ---
-title: "my title"
-author: "Dummy Surname (dummy@mail.com)"
+title: "Hands_on_I"
+author: "Leire Asua Intxausti (leire.asua01@estudiant.upf.edu) & Núria Montalà Palau (nuria.montala01@estudiant.upf.edu)"
 date: "Last update: `r format(Sys.time(), '%d %B, %Y')`"      
-output:
+output: 
   html_document:
+    theme: cosmo
+    highligth: pygments
+    number_sections: true
     toc: true
+    toc_depth: 4
+    toc_float: true
     fig_caption: true
+    keep_md: true
+editor_options: 
+  markdown: 
+    wrap: sentence
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# Load Necessary Libraries
 
-# Analysis of the Heart Disease Dataset 
-Load the data from
-[here](https://raw.githubusercontent.com/jpinero/DMI_2021/main/datasets/heart_disease_dataset.csv), and the description is [here](https://raw.githubusercontent.com/jpinero/DMI_2021/main/datasets/heart_disease_description.txt). 
-The original dataset comes from [here](https://archive.ics.uci.edu/ml/datasets/Heart+Disease) and corresponds to the [processed cleveland data](https://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/processed.cleveland.data)
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(mice)
+library(corrplot)
+library(ggplot2)
+library(gridExtra)
+library(readxl)
+library(openxlsx)
+library(tidyr)
+library(ggthemes)
+library(cowplot)
+library(grid)
+library(gridExtra)
+library(RColorBrewer)
+library(stats)
+library(ComplexHeatmap)
+library(circlize)
+```
+
+# Analysis of the Heart Disease Dataset
+
+::: {style="text-align: justify; color: #9b9b9b; background-color: white;"}
+Load the data from [here](https://raw.githubusercontent.com/jpinero/DMI_2021/main/datasets/heart_disease_dataset.csv), and the description is [here](https://raw.githubusercontent.com/jpinero/DMI_2021/main/datasets/heart_disease_description.txt).
+The original dataset comes from [here](https://archive.ics.uci.edu/ml/datasets/Heart+Disease) and corresponds to the [processed cleveland data](https://archive.ics.uci.edu/ml/machine-learning-databases/heart-disease/processed.cleveland.data).
+:::
 
 ## Perform an EDA on the dataset
 
 ```{r}
+# See table separating item
+lines <- readLines("data/heart_disease_dataset.csv", n = 10)
+lines 
 
+# Read the table
+dataset <- read_table("data/heart_disease_dataset.csv")
+View(dataset)
 
+# Summary of the data
+summarytools::dfSummary(dataset, stats = c("mean", "sd", "median", "iqr")) %>% 
+  print(method = "render")
 
+# Variable analysis
+colnames(dataset)
+
+## NUMERICAL VAR
+
+# age: age in years
+# trestbps: resting blood pressure (in mm Hg on admission to the hospital)
+# chol: serum cholestoral in mg/dl
+# thalach: maximum heart rate achieved
+# oldpeak: T depression induced by exercise relative to rest
+
+## CATEGORICAL VAR
+
+# sex: gender (1 = male; 0 = female)
+# cp: chest pain type (1 = typical angina, 2 = atypical angina, 3 = non-anginal pain, 4 = asymptomatic)
+# fbs: fasting blood sugar > 120 mg/dl (1 = true; 0 = false)
+# restecg: resting electrocardiographic results (0 = normal, 1 = having ST-T wave abnormality, 2 = showing probable or definite left ventricular hypertrophy)
+# exang: exercise induced angina (1 = yes; 0 = no)
+# slope: the slope of the peak exercise ST segment (1 = upsloping, 2 = flat, 3 = downsloping)
+# ca: number of major vessels (0-3) colored by flourosopy
+# thal: 3 = normal; 6 = fixed defect; 7 = reversable defect
+# num: diagnosis of heart disease (0 = < 50% diameter narrowing, 1 = > 50% diameter narrowing)
+
+# Remove patient_id from the dataset, it was no used as attribute
+heart_disease_dataset <- dataset %>%
+  dplyr::select(-patient_id)
+
+# Check for duplicates 
+heart_disease_dataset[duplicated(heart_disease_dataset), ] # no duplicates found
+
+# Check ca, thal, num
+unique(heart_disease_dataset$ca) # "?" representing NA
+unique(heart_disease_dataset$thal) # "?" representing NA
+unique(heart_disease_dataset$num) # also 2, 3, 4, convert into NA
+
+# For categorical vars change numbers to labels, for numeric ones ensure they are numeric
+heart_disease_dataset <- heart_disease_dataset %>%
+  mutate(
+    sex = factor(sex, levels = c(0, 1), labels = c("female", "male")),
+    cp = factor(cp, levels = c(1,2,3,4), labels = c("typical", "atypical", "non-anginal", "asymptomatic")),
+    fbs = factor(fbs, levels = c(0,1), labels = c("<120 mg/dl", ">120 mg/dl")),
+    restecg = factor(restecg, levels = c(0,1,2), labels = c("normal", "abnormality", "hypertrophy")),
+    exang = factor(exang, levels = c(0,1), labels = c("no", "yes")),
+    slope = factor(slope, levels = c(1,2,3), labels = c("upsloping", "flat", "downsloping")),
+    ca = factor(na_if(ca,"?"), levels = c(0,1,2,3)),
+    thal = factor(na_if(thal,"?"), levels = c(3,6,7), labels = c("normal", "fixed", "reversable")),
+    num = factor(num, levels = c(0,1), labels = c("< 50%", "> 50 %")),
+    age = as.double(age),
+    trestbps = as.double(trestbps),
+    chol = as.double(chol),
+    thalach = as.double(thalach),
+    oldpeak = as.double(oldpeak)
+  )
 ```
 
+### Imputation of missing values in categorical variables using mice
+
+::: {style="text-align: justify"}
+Inside mice package, polyreg method was used.
+This method applies polynomial regression to predict the missing values based on the relationship between the variable with missing values and the other variables in the dataset
+
+-   ca (number of major vessels): 3 missing values were imputed to 0 and the other to 1
+
+-   thal: one missing value was imputed to "fixed" and the other to "normal"
+
+-   num (diagnosis of heart disease): for this variable, as it is the diagnosis of heart disease, the only possibilities were 0 and 1, so all values greater than 1 were imputed to 1
+:::
+
+```{r}
+# Check for missing data (NA)
+colSums(is.na(heart_disease_dataset))
+
+# Impute missing data using mice
+imput_data <- mice(heart_disease_dataset, method = "polyreg")
+imput_data$predictorMatrix
+
+imp_heart_disease <- complete(imput_data)
+View(imp_heart_disease)
+```
+
+### Univariate EDA for Numerical Variables
+
+::: {style="text-align: justify"}
+Histograms: for showing the frequency of values in each numeric variable histograms were performed, while for checking the distribution of the data density lines were added.
+Combining both, the plots revealed outliers for chol, oldpeak and trestbps variables.
+Besides, plots represented poor normal distributions, that could be defined as skewed distributions, being oldpeak the least normal distributed.
+:::
+
+```{r}
+# Check again for numeric variables
+numeric_cols <- sapply(imp_heart_disease, is.numeric)
+
+# Summary of numeric variables
+summary(imp_heart_disease[numeric_cols])
+
+# Histograms/density plots
+for (col in names(imp_heart_disease)[numeric_cols]) {
+  hist(
+    imp_heart_disease[[col]],
+    main = paste("Histogram of", col),
+    xlab = col,
+    col = "lightblue",
+    freq = FALSE # for density plotting
+  )
+  lines(density(imp_heart_disease[[col]]), col = "red", lwd = 2) # lwd more widht to the line
+}
+```
+
+::: {style="text-align: justify"}
+Q-Q plots: after histograms, q-q plots were performed in order to check wether the variables were normal distributed or not.
+As mentioned before, the plots for most of the variables suggest that they do not fully follow a normal distribution, with some deviations from the reference line.
+For instance, oldpeak and trestbps exhibit heavy tails, showing notable deviations from the reference line.
+On the other hand, although the chol, thalach and age variables mostly follow the reference line, they show slight deviations at the tails which for some cases could be considered as outliers.
+:::
+
+```{r}
+for (col in names(imp_heart_disease)[numeric_cols]) {
+  qqnorm(
+    imp_heart_disease[[col]],
+    main = paste("Q-Q plot of", col),
+    xlab = "Theoretical Quantiles",
+    ylab = "Sample Quantiles",
+    col = "black",
+  )
+  qqline(imp_heart_disease[[col]], col = "red", lwd = 2)
+}
+```
+
+::: {style="text-align: justify"}
+Boxplots: finally, boxplots were created to assess distributions and to check for outliers.
+In chol and oldpeak variables some outliers were seen for further correction, while the outliers seen in talach and trestbps were defined as extreme but possible values.
+In age, 0 outliers were found.
+:::
+
+```{r}
+# Boxplots of numeric variables
+for (col in names(imp_heart_disease)[numeric_cols]) {
+  boxplot(
+    imp_heart_disease[[col]],
+    main = paste("Boxplot of", col),
+    horizontal = TRUE,
+    col = "lightblue"
+  )
+}
+```
+
+::: {style="text-align: justify"}
+Taking into account the outliers found in the boxplots, some of them were corrected.
+
+-   For trestbps, although some extreme values were identified as outliers, they were kept since they are not unreasonable for this variable.
+
+-   For chol, the most extreme value (564) was removed and the other outliers that were above the threshold (mean + 3 standard deviations) were replaced by the threshold value, ensuring not losing so much data.
+
+-   For talach, no significant outliers were found.
+
+-   For oldpeak, the outliers were imputed by replacing any values greater than the upper limit (Q3 + 1.5 \* IQR) with the upper limit value, ensuring that these outliers do not affect the analysis.
+
+Finally, boxplots were performed again in order to see the changes after managing the outliers.
+:::
+
+```{r}
+# trestbps: ouliers are extreme but possible, so keep them 
+out_trestbps <- boxplot.stats(imp_heart_disease$trestbps)$out
+out_trestbps
+
+# chol: remove the most extreme (564), replace the rest using mean/sd
+out_chol <- boxplot.stats(imp_heart_disease$chol)$out
+out_chol
+
+imp_heart_disease <- imp_heart_disease[imp_heart_disease$chol !=564,]
+
+mean_chol <- mean(imp_heart_disease$chol, na.rm = TRUE)
+sd_chol <- sd(imp_heart_disease$chol, na.rm = TRUE)
+upper_bound_3sd <- mean_chol + 3 * sd_chol
+
+imp_heart_disease$chol[imp_heart_disease$chol > upper_bound_3sd] <- upper_bound_3sd
+
+# talach: no important outliers
+out_talach <- boxplot.stats(imp_heart_disease$talach)$out
+out_talach
+
+# oldpeak: impute them
+out_oldpeak <- boxplot.stats(imp_heart_disease$oldpeak)$out
+out_oldpeak
+
+q1_oldpeak <- quantile(imp_heart_disease$oldpeak, 0.25)
+q3_oldpeak <- quantile(imp_heart_disease$oldpeak, 0.75)
+iqr_oldpeak <- q3_oldpeak - q1_oldpeak
+upper_iqr_oldpeak <- q3_oldpeak + 1.5 * iqr_oldpeak
+
+imp_heart_disease$oldpeak[imp_heart_disease$oldpeak > upper_iqr_oldpeak] <- upper_iqr_oldpeak
+
+# Boxplots of numeric variables after outliers managment
+for (col in names(imp_heart_disease)[numeric_cols]) {
+  boxplot(
+    imp_heart_disease[[col]],
+    main = paste("Boxplot of", col),
+    horizontal = TRUE
+  )
+}
+```
+
+### Univariate EDA for Categorical Variables
+
+::: {style="text-align: justify"}
+In order to visualize the distribution of categorical variables barplots were performed.
+As a result, it is found that some variables are less balanced than others, especially variables with 3 levels.
+:::
+
+```{r}
+# Check for categorical variables
+categorical_cols <- sapply(imp_heart_disease, is.factor)
+
+# Summary of categorical variables
+summary(imp_heart_disease[categorical_cols])
+
+# Barplots
+for (col in names(imp_heart_disease)[categorical_cols]) {
+  barplot(
+    table(imp_heart_disease[[col]]),
+    main = paste("Barplot of", col),
+    col = "lightblue"
+  )
+}
+```
+
+### Bivariate EDA for Numerical Variables
+
+::: {style="text-align: justify"}
+In order to visualize the relationships between numerical variables, scatterplots were performed.
+Besides, for each plot, the correlation coefficient (r) was calculated to quantify the strength and direction of the relationship.
+These revealed very weak relations between the different numerical variables.
+The higher r value was found between age and talach, showing a negative correlation, meaning that while we age the maximum heart rate decreases.
+:::
+
+```{r}
+numeric_names <- names(imp_heart_disease)[sapply(imp_heart_disease, is.numeric)]
+
+# scatterplots
+for (i in 1:(length(numeric_names)-1)){
+  for (j in (i+1):length(numeric_names)){
+    cor_coef <- cor(imp_heart_disease[[numeric_names[i]]], imp_heart_disease[[numeric_names[j]]])
+    plot(
+      imp_heart_disease[[numeric_names[i]]],
+      imp_heart_disease[[numeric_names[j]]],
+      main = paste(numeric_names[i], "vs", numeric_names[j], "\nr=", round(cor_coef, 2)),
+      xlab = numeric_names[i],
+      ylab = numeric_names[j],
+      col = "lightblue"
+    )
+  }
+}
+```
+
+::: {style="text-align: justify"}
+In addition, a correlation matrix was performed to summarize the pairwise correlations between all numerical variables and this was visualized using corrplot package.
+The matrix confirmed the weak relations between the numerical variables.
+Showing the highest relation between age and thalach (max heart rate) and showing also less significant relations like thalach with oldpeak (ST depression) or age with trestbps (resting blood pressure).
+:::
+
+```{r}
+# Correlation matrix for numerical variables
+correlation_matrix <- cor(imp_heart_disease[, numeric_cols], use = "complete.obs")
+print(correlation_matrix)
+
+# Visualize correlation matrix using corrplot
+corrplot(correlation_matrix, method = "circle")
+```
 
 ## Create visualizations in order to show which variables seem to be more associated with heart disease
 
-```{r}
+::: {style="text-align: justify"}
+Performing a logistic regression model, we want to see which variables (numerical and categorical) are more associated with heart disease.
+In this case, heart disease is defined as num variable (diagnosis of heart disease).
+So, as a result, sex, cp (chest pain type) and ca (number of major vessels) revealed high significance in the association with heart disease diagnosis.
+Besides, other variables like thal, slope (the slope of the peak exercise ST segment) and fbs (fasting blood sugar) revealed lower but significance associations.
+Moreover, odd ratios were calculated to quantify how much each variable contributes to heart disease, confirming the results obtained before.
+When it comes to the bar plots performed, reaffirming the association of sex, cp and ca with heart disease, it can be seen that people with heart disease tend to be men, asymptomatic of chest pain and with 1 or 2 major vessels.
+:::
 
+```{r}
+# Taking into account num categorical variable is diagnosis, first factorize it
+imp_heart_disease$num <- as.factor(imp_heart_disease$num)
+
+# Logistic regression model with all varriables
+log_model <- glm(num ~ ., data = imp_heart_disease, family = binomial)
+summary(log_model)
+
+# Convert log odds to odd ratios for better understanding
+odds_ratios <- exp(coef(log_model))  
+odds_ratios
+
+# Barplot for sex vs num
+sex_plot <- ggplot(imp_heart_disease, aes(x = sex, fill = factor(num))) +
+  geom_bar(position = "dodge") +
+  labs(title = "Heart disease diagnosis by sex", x = "Sex", y = "Count", fill = "Diagnosis") +
+  scale_fill_manual(values = c("lightgreen", "orange"), labels = c("No Disease", "Disease"))
+
+# Barplot for ca vs num
+ca_plot <- ggplot(imp_heart_disease, aes(x = factor(ca), fill = factor(num))) +
+  geom_bar(position = "dodge") +
+  labs(title = "Heart disease diagnosis by number of major vessels", x = "Number of major vessels", y = "Count", fill = "Diagnosis") +
+  scale_fill_manual(values = c("lightgreen", "orange"), labels = c("No Disease", "Disease"))
+
+
+# Barplot for cp vs num
+cp_plot <- ggplot(imp_heart_disease, aes(x = factor(cp), fill = factor(num))) +
+  geom_bar(position = "dodge") +
+  labs(title = "Heart disease diagnosis by chest pain type", x = "Chest pain type", y = "Count", fill = "Diagnosis") + 
+  scale_fill_manual(values = c("lightgreen", "orange"), labels = c("No Disease", "Disease"))
+
+
+grid.arrange(sex_plot, ca_plot, cp_plot)
 ```
 
+# Difference in mortality rates in hospitalized COVID-19 patients
 
-# 2 Difference in mortality rates in hospitalized COVID-19 patients 
+::: {style="text-align: justify; color: #9b9b9b; background-color: white;"}
 Using the supplementary material from the [Difference in mortality rates in hospitalized COVID-19 patients identified by cytokine profile clustering using a machine learning approach: An outcome prediction alternative](https://www.frontiersin.org/articles/10.3389/fmed.2022.987182/full), perform the following tasks
+:::
 
 ## Reproduce Figure 1 from the publication
 
+### Data Preparation
+
+::: {style="text-align: justify"}
+First, patient data was processed by converting excel serial dates into proper formats and replacing missing values ("NI") with NA.
+Numeric values stored as characters were standardized by replacing commas with dots and converting applicable entries to numeric format.
+Binary categorical variables were refined to contain only "Yes" or "No" values.
+Additionally, an automated classification system was implemented to update binary variables based on corresponding numerical indicators, ensuring logical coherence.
+:::
+
+```{r, warning=FALSE}
+# Import Data
+data <- read_excel("data/Table1.xlsx", skip = 1)
+
+# Correct the data format
+data$`Hospitalization date` <- as.Date(as.numeric(data$`Hospitalization date`), origin = "1899-12-30")
+data$`Syntoms onset` <- as.Date(as.numeric(data$`Syntoms onset`), origin = "1899-12-30")
+
+# Replace "NI" with NA
+data <- data %>%
+  mutate(across(where(is.character), ~ na_if(., "NI")))
+
+# Replace commas with dots in all character columns and convert to numeric if applicable
+data <- data %>%
+  mutate(across(where(is.character), ~ gsub(",", ".", .))) %>%
+  mutate(across(where(is.character), ~ ifelse(grepl("^[0-9.]+$", .), as.numeric(.), .)))
+
+# Replace values in specified columns that are not "Yes" or "No" with NA
+data <- data %>%
+  mutate(across(
+    c(`Admission to ICU`, `ARDS Diagnosis`, `CRS Diagnosis`, `Use of NIV`, `Use of AMV`, Death),  # Replace with your column names
+    ~ ifelse(. %in% c("Yes", "No"), ., NA)
+  ))
+
+## Automating the Update of Binary Status Columns ('Yes'/'No') Based on Associated Numeric Thresholds Across Multiple Variable Pairs in Patient Data
+
+# Define the column pairs: First column to update, second column for condition
+column_pairs <- list(
+  c("Admission to ICU", "Days in ICU"),
+  c("ARDS Diagnosis", "Days with ARDS"),
+  c("CRS Diagnosis", "Days with CRS"),
+  c("Use of NIV", "Days with NIV"),
+  c("Use of AMV", "Days with AMV")
+)
+
+# Apply the logic to each pair
+for (pair in column_pairs) {
+  column_to_update <- pair[1]
+  condition_column <- pair[2]
+  
+  data <- data %>%
+    mutate(!!sym(column_to_update) := case_when(
+      !!sym(condition_column) > 0 ~ "Yes",
+      !!sym(condition_column) == 0 ~ "No",
+      TRUE ~ .data[[column_to_update]] # Retain existing value if not covered by conditions
+    ))
+}
+```
+
+::: {style="text-align: justify"}
+To ensure data completeness and consistency, records with missing "Death" status were removed.
+Additionally, duplicate patient entries were identified and addressed by retaining only one instance if all values were identical; otherwise, duplicates were eliminated to prevent inconsistencies in the analysis.
+:::
+
 ```{r}
+# Remove rows where the column Death is NA
+complete_data <- data %>% filter(!is.na(Death) & Death != "")
+
+# Remove IDs with duplicates
+data_cleaned <- complete_data %>%
+  group_by(ID) %>%                               
+  filter(n() == 1 || n_distinct(across(everything())) == 1) %>%  
+  slice(1) %>%                                   
+  ungroup()                                     
+```
+
+::: {style="text-align: justify"}
+The cytokine dataset was processed by assigning column names, filling missing patient IDs, replacing "NI" values with NA, and standardizing ID labels to maintain data consistency.
+:::
+
+```{r, warning = FALSE, message=FALSE}
+data_cytokine <- read.xlsx("data/Table2.xlsx", startRow = 2, 
+                     na.strings = c("NI", "ND"), fillMergedCells = TRUE)
+
+# Rename the first column to "ID"
+colnames(data_cytokine)[1] <- "ID"
+
+data_cytokine[2:ncol(data_cytokine)] <- lapply(data_cytokine[2:ncol(data_cytokine)], as.numeric)
+
+# Trim any leading or trailing whitespace from the "ID" column
+data_cytokine$ID <- trimws(as.character(data_cytokine$ID)) 
+
+# Correct any inconsistencies in patient IDs
+data_cytokine$ID <- gsub("HSDJ", "HSJD", data_cytokine$ID) 
+```
+
+::: {style="text-align: justify"}
+Finally, the cleaned patient dataset was filtered to include only those individuals who had at least one corresponding cytokine measurement.
+This ensured that the final dataset contained only relevant patients with available cytokine data, allowing for meaningful comparisons and further statistical analyses.
+:::
+
+```{r}
+filtered_data <- data_cleaned %>% filter(ID %in% data_cytokine$ID) 
+```
+
+### Data Visualization
+
+#### Plot A: Histogram for Age Distribution (Top-Left)
+
+```{r}
+plot_1A <-as_grob(~hist(filtered_data$Age, 
+                          xlab = "Age (years)", 
+                          ylab = "Frequency (n)", 
+                          col = "#ddecec", border = "black",
+                          main = "Age",
+                          ylim = c(0, 50),
+                          cex.main=1))
+```
+
+#### Plot B: Clinical Classification Table (Top-Right)
+
+```{r}
+table_1B <- data.frame(matrix(ncol = 4, nrow = 4))
+colnames(table_1B) <- c("Clinical\nclassification", "NIV", "AMV", "ARDS")
+
+table_1B[1,] <- c("G1", "-", "-", "-")
+table_1B[2,] <- c("G2", "-/+", "+/-", "-")
+table_1B[3,] <- c("G3", "+", "-", "+")
+table_1B[4,] <- c("G4", "-/+", "+", "+")
+
+table_1B <- tableGrob(table_1B, rows = NULL)
+
+title_bold_1B <- textGrob("Definition of the Clinical Classification", gp=gpar(fontface="bold"))
+
+plot_1B <- arrangeGrob(table_1B, top=title_bold_1B, vp=viewport(height=0.8))
+```
+
+#### Plot C: Clinical Classification BarPlot (Bottom-Left)
+
+```{r}
+# Group the data based on the attributes "ARDS Diagnosis", "Use of NIV" and "Use of AMV"
+classify_group <- function(NIV, AMV, ARDS) {
+  if (NIV == "No" & AMV == "No" & ARDS == "No") {
+    return("G1")
+  } else if (NIV == "Yes" & AMV == "No" & ARDS == "Yes") {
+    return("G3")
+  } else if ((NIV == "No" | NIV == "Yes") & AMV == "Yes" & ARDS == "Yes") {
+    return("G4")
+  } else {
+    return("G2")
+  }
+}
+
+filtered_data <- filtered_data %>%
+  rowwise() %>%
+  mutate(Group = classify_group(`Use of NIV`, `Use of AMV`, `ARDS Diagnosis`))
+
+# Count the frequency of each group
+group_counts <- as.data.frame(table(filtered_data$Group))
+colnames(group_counts) <- c("Group", "Count")
+
+# Generate the plot
+plot_1C <- as_grob(~{
+  barplot_heights <- barplot(group_counts$Count, 
+                             names.arg = group_counts$Group, 
+                             col = c("#74dccb", "#f6ffb4", "#c1b0d8", "#ff686e"), 
+                             xlab = "Clinical Classification", 
+                             ylab = "Frequency (n)", 
+                             main = "Clinical Classification",
+                             ylim = c(0, 80),  
+                             yaxt = "n",       
+                             cex.main = 1)
+  
+  axis(2, at = seq(0, 80, by = 20), las = 1)  
+  
+  text(x = barplot_heights, 
+       y = group_counts$Count, 
+       labels = group_counts$Count, 
+       pos = 3,  
+       cex = 0.8)  
+})
 
 ```
 
-
-## Reproduce Figure 2 from the publication
-but instead of representing the clusters in the annotation, represent the groups (G1 to G4)
+#### Plot D: Vital Status Barplot (Bottom-Right)
 
 ```{r}
+# Calculate the death frequencies
+death_counts <- as.data.frame(table(filtered_data$Death))
+colnames(death_counts) <- c("Death", "Count")
+  
+# Generate the plot
+plot_1D <- as_grob(~{
+  barplot_heights <- barplot(death_counts$Count, 
+                             names.arg = death_counts$Death, 
+                             col = c("#74dccb", "#f6ffb4"), 
+                             xlab = "Death", 
+                             ylab = "Frequency (n)", 
+                             main = "Vital status",
+                             ylim = c(0, max(death_counts$Count) + 20), 
+                             cex.main = 1)
+  
+  text(x = barplot_heights, 
+       y = death_counts$Count, 
+       labels = death_counts$Count, 
+       pos = 3,  
+       cex = 0.8)  
+})
+```
 
+#### FIGURE 1
+
+```{r plot_grid_figure_1, fig.width=9, fig.height=7.5, fig.align='center'}
+# Generate a list to show all the plots together
+figure_1 <- list(plot_1A, plot_1B, plot_1C, plot_1D)
+
+plot_grid(plotlist = figure_1, labels = c("A","B","C","D"))
+```
+
+## Reproduce Figure 2 from the publication
+
+::: {style="text-align: justify; color: #9b9b9b; background-color: white;"}
+Instead of representing the clusters in the annotation, represent the groups (G1 to G4)
+:::
+
+### Data Preparation
+
+::: {style="text-align: justify"}
+Since laboratory test time points differ among patients, we compute the median cytokine values per patient to ensure consistency.
+:::
+
+```{r warning=FALSE}
+data_cytokine <- data_cytokine %>%
+  group_by(ID) %>% 
+  summarise(across(.cols = everything(), .fns = ~ median(.x, na.rm = TRUE))) 
+```
+
+::: {style="text-align: justify"}
+Since some cytokine values are missing, we apply an imputation method to estimate missing values based on observed data.
+:::
+
+```{r warning=FALSE}
+imputed_cytokine <- mice(data_cytokine)
+completed_data_cytokine<- complete(imputed_cytokine)
+selected_data <- completed_data_cytokine[, c(1,3:14)]
+```
+
+::: {style="text-align: justify"}
+To categorize patients, we merge the cytokine dataset with metadata containing group classification (G1-G4), death status, and gender.
+:::
+
+```{r warning=FALSE}
+selected_data <- merge(selected_data, filtered_data[, c("ID", "Group", "Death", "Gender")], 
+                  by = "ID", all.x = TRUE)
+
+selected_data <- subset(selected_data, !is.na(Group))
+
+```
+
+::: {style="text-align: justify"}
+Before visualization, we transpose the dataset and scale the cytokine values as relative percentages.
+:::
+
+```{r}
+heatmap_data <- t(selected_data[, 2:13]) 
+
+table_to_heatmap <- apply(heatmap_data, 2, function(x) (x / sum(x)) * 100)
+```
+
+### Data Visualization
+
+```{r heatmap, fig.width=9, fig.height=7.5, fig.align='center'}
+# Create annotation dataframe for patient groups
+annotations <- data.frame(Group = selected_data$Group)
+
+# Define colors for each group
+heatmap_annotations <- HeatmapAnnotation(df = annotations, show_annotation_name = FALSE, col = list(Group =  c("G1" = "#75dbc8", "G2" = "#f6ffb4", 
+                                             "G3" = "#c1b0d8", "G4" = "#ff686e")))
+
+custom_colors <- c("#fef6eb", "#ff9953", "#931500")
+
+
+heatmap <- Heatmap(table_to_heatmap,
+              top_annotation = heatmap_annotations,
+              col = colorRamp2(c(0, 50, 100), custom_colors),
+              column_title = "Patients",
+              column_title_side = "bottom",
+              show_column_names = F,
+              show_heatmap_legend = F)
+
+legend <- Legend(
+  title = "Relative expression",
+  at = c(0, 50, 100),
+  labels = c("0.00", "50.0%", "100.0%"),
+  legend_gp = gpar(fill = custom_colors, col = NA) 
+)
+
+postion_legend <- packLegend(legend, direction = "vertical")
+
+figure_2 <- function() {
+  draw(heatmap, annotation_legend_list = postion_legend, annotation_legend_side = "left")
+}
+
+figure_2()
 ```
 
 ## Improve figure 2 of the publication
-Add a second annotation with information of deathm and a third one with information of gender
+
+::: {style="text-align: justify; color: #9b9b9b; background-color: white;"}
+Add a second annotation with information of death and a third one with information of gender
+:::
+
+::: {style="text-align: justify"}
+Gender column in selected_data is being cleaned and standardized to ensure that only valid gender categories are used.
+If a value is not recognized, it is replaced with "Unknown", ensuring data consistency.
+After standardizing the gender data, the cbind() function is used to combine the existing annotations dataframe with two additional variables: Death status and Gender.
+:::
 
 ```{r}
+selected_data$Gender <- ifelse(selected_data$Gender %in% c("F", "M"), selected_data$Gender, "Unknown")
 
+improved_annotations <- cbind(annotations, Death = selected_data$Death, Gender = selected_data$Gender )
 ```
 
+```{r, fig.width= 9, fig.height= 7,5, fig.align='center'}
+# Define colors for each group
+heatmap_annotations_2 <- HeatmapAnnotation(df = improved_annotations, show_annotation_name = FALSE, col = list(
+  Group =  c("G1" = "#75dbc8", "G2" = "#f6ffb4", "G3" = "#c1b0d8", "G4" = "#ff686e"), 
+  Death = c("Yes" = "#FFB3B3", "No" = "#B3FFB3"), 
+  Gender = c("F" = "#a1b7ff", "M" = "#FFE4B5", "Unknown" = "#D3D3D3")))
+
+custom_colors <- c("#fef6eb", "#ff9953", "#931500")
+
+heatmap_2 <- Heatmap(table_to_heatmap, 
+               top_annotation = heatmap_annotations_2,
+               col = custom_colors,
+               column_title = "Patients",
+               column_title_side = "bottom",
+               row_title_side = "right",
+               show_column_names = F, 
+               show_heatmap_legend = F)
+
+legend_2 <- Legend(
+  title = "Relative expression",
+  at = c(0, 50, 100),
+  labels = c("0.00", "50.0%", "100.0%"),
+  legend_gp = gpar(fill = custom_colors, col = NA) 
+)
+
+
+postion_legend_2 <- packLegend(legend_2, direction = "vertical")
+
+figure_2b <- function() {
+  draw(heatmap_2, annotation_legend_list = postion_legend_2, annotation_legend_side = "left")
+}
+
+figure_2b()
+
+```
 
 # session info {.unnumbered}
 
 ```{r, results='asis',  echo=FALSE, message=FALSE }
 sessionInfo()
 ```
+
+:::
